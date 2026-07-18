@@ -75,7 +75,11 @@ const DROP_GUARANTEE = 6; // fuerza el drop si no cayó en las primeras N destru
 const PU_COLOR = "#0ff"; // cian, color del power-up Disparo Triple
 const SHIELD_DURATION = 5; // segundos que dura el escudo
 const SHIELD_COLOR = "#8cf"; // azul claro, color del power-up Escudo
-const PU_TYPES = ["triple", "shield"]; // tipos que deben salir garantizados por nivel
+const SLOW_DURATION = 6; // segundos que dura el slow motion
+const SLOW_FACTOR = 0.5; // asteroides a mitad de velocidad durante el efecto
+const SLOW_COLOR = "#fd4"; // ámbar, color del power-up Slow Motion
+const ALL_PU_TYPES = ["triple", "shield", "slow"]; // tipos existentes
+const TYPES_PER_LEVEL = 2; // cuántos de los 3 tipos aparecen (1 c/u) por nivel, al azar
 
 class Asteroid {
   constructor(x, y, size = 3) {
@@ -297,6 +301,19 @@ class PowerUp {
       ctx.beginPath();
       ctx.arc(0, 0, this.radius * 0.55, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (this.type === "slow") {
+      // Reloj en ámbar (alude a la cámara lenta)
+      ctx.strokeStyle = SLOW_COLOR;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      // Manecillas
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(0, -this.radius * 0.6);
+      ctx.moveTo(0, 0);
+      ctx.lineTo(this.radius * 0.5, 0);
+      ctx.stroke();
     } else {
       // Triple: rombo cian + abanico de 3 líneas
       ctx.strokeStyle = PU_COLOR;
@@ -323,7 +340,7 @@ class PowerUp {
 // ── Estado del juego ──────────────────────────────────────────────────────────
 let ship, bullets, asteroids, particles, powerups;
 let score, lives, level;
-let tripleTimer, shieldTimer, droppedTypes, killsThisLevel;
+let tripleTimer, shieldTimer, slowTimer, droppedTypes, killsThisLevel, levelTypes;
 let state; // 'playing' | 'dead' | 'gameover'
 let deadTimer;
 
@@ -342,17 +359,21 @@ function spawnAsteroids(count) {
 function resetLevelDrop() {
   droppedTypes = new Set();
   killsThisLevel = 0;
+  // Elegir al azar TYPES_PER_LEVEL de los 3 tipos existentes para este nivel
+  const pool = [...ALL_PU_TYPES];
+  while (pool.length > TYPES_PER_LEVEL) pool.splice(randInt(0, pool.length - 1), 1);
+  levelTypes = pool;
 }
 
 function tryDropPowerup(x, y) {
-  if (droppedTypes.size >= PU_TYPES.length) return; // ambos tipos ya salieron este nivel
+  if (droppedTypes.size >= levelTypes.length) return; // ya salieron los tipos del nivel
   killsThisLevel++;
-  for (const t of PU_TYPES) {
+  for (const t of levelTypes) {
     if (droppedTypes.has(t)) continue;
     if (Math.random() < DROP_CHANCE || killsThisLevel >= DROP_GUARANTEE) {
       powerups.push(new PowerUp(x, y, t));
       droppedTypes.add(t);
-      break; // máx. un tipo por destrucción, para espaciarlos
+      return; // máx. un item por destrucción, para espaciarlos
     }
   }
 }
@@ -365,6 +386,7 @@ function initGame() {
   powerups = [];
   tripleTimer = 0;
   shieldTimer = 0;
+  slowTimer = 0;
   resetLevelDrop();
   score = 0;
   lives = 3;
@@ -422,6 +444,7 @@ function update(dt) {
 
   if (tripleTimer > 0) tripleTimer -= dt;
   if (shieldTimer > 0) shieldTimer -= dt;
+  if (slowTimer > 0) slowTimer -= dt;
 
   // Disparar
   if (pressed("Space")) {
@@ -430,7 +453,9 @@ function update(dt) {
 
   ship.update(dt);
   bullets.forEach((b) => b.update(dt));
-  asteroids.forEach((a) => a.update(dt));
+  // Slow motion: solo los asteroides van a mitad de velocidad; nave y balas normales
+  const astDt = slowTimer > 0 ? dt * SLOW_FACTOR : dt;
+  asteroids.forEach((a) => a.update(astDt));
   particles.forEach((p) => p.update(dt));
   powerups.forEach((p) => p.update(dt));
 
@@ -460,6 +485,7 @@ function update(dt) {
       p.dead = true;
       if (p.type === "triple") tripleTimer = TRIPLE_DURATION;
       else if (p.type === "shield") shieldTimer = SHIELD_DURATION;
+      else if (p.type === "slow") slowTimer = SLOW_DURATION;
       explode(p.x, p.y, 12); // destello al recoger
     }
   }
@@ -533,6 +559,8 @@ function drawHUD() {
   for (let i = 0; i < lives; i++) drawLifeIcon(W - 16 - i * 22, 18);
 
   // Indicadores de power-ups activos (fila inferior, uno por línea)
+  if (slowTimer > 0)
+    drawPowerBar("SLOW", slowTimer / SLOW_DURATION, SLOW_COLOR, H - 50);
   if (shieldTimer > 0)
     drawPowerBar("SHIELD", shieldTimer / SHIELD_DURATION, SHIELD_COLOR, H - 32);
   if (tripleTimer > 0)
