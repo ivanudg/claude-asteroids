@@ -78,8 +78,15 @@ const SHIELD_COLOR = "#8cf"; // azul claro, color del power-up Escudo
 const SLOW_DURATION = 6; // segundos que dura el slow motion
 const SLOW_FACTOR = 0.5; // asteroides a mitad de velocidad durante el efecto
 const SLOW_COLOR = "#fd4"; // ámbar, color del power-up Slow Motion
-const ALL_PU_TYPES = ["triple", "shield", "slow"]; // tipos existentes
-const TYPES_PER_LEVEL = 2; // cuántos de los 3 tipos aparecen (1 c/u) por nivel, al azar
+const HYPER_DURATION = 8; // segundos que dura la hiperpropulsión
+const HYPER_THRUST_MULT = 2.4; // multiplica la aceleración de la nave
+const HYPER_ROT_MULT = 1.3; // giro un poco más ágil
+const HYPER_DRAG = 0.994; // menos fricción => mayor velocidad máxima (normal: 0.987)
+const HYPER_COLOR = "#5f8"; // verde, color del power-up Hiperpropulsión
+const NOVA_CHANCE = 0.04; // prob. baja de drop de la Bomba Nova (ítem escaso)
+const NOVA_COLOR = "#f55"; // rojo, color del power-up Bomba Nova
+const ALL_PU_TYPES = ["triple", "shield", "slow", "hyper"]; // tipos del pool rotativo
+const TYPES_PER_LEVEL = 2; // cuántos tipos del pool aparecen (1 c/u) por nivel, al azar
 
 class Asteroid {
   constructor(x, y, size = 3) {
@@ -161,9 +168,10 @@ class Ship {
     if (this.invincible > 0) this.invincible -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
 
-    const ROT = 3.5; // rad/s
-    const THRUST = 260; // px/s²
-    const DRAG = 0.987;
+    const hyper = hyperTimer > 0;
+    const ROT = 3.5 * (hyper ? HYPER_ROT_MULT : 1); // rad/s
+    const THRUST = 260 * (hyper ? HYPER_THRUST_MULT : 1); // px/s²
+    const DRAG = hyper ? HYPER_DRAG : 0.987;
 
     if (keys["ArrowLeft"]) this.angle -= ROT * dt;
     if (keys["ArrowRight"]) this.angle += ROT * dt;
@@ -314,6 +322,27 @@ class PowerUp {
       ctx.moveTo(0, 0);
       ctx.lineTo(this.radius * 0.5, 0);
       ctx.stroke();
+    } else if (this.type === "hyper") {
+      // Doble chevron (>>) en verde (alude a la velocidad)
+      ctx.strokeStyle = HYPER_COLOR;
+      const r = this.radius;
+      for (const dx of [-r * 0.5, r * 0.15]) {
+        ctx.beginPath();
+        ctx.moveTo(dx, -r * 0.7);
+        ctx.lineTo(dx + r * 0.6, 0);
+        ctx.lineTo(dx, r * 0.7);
+        ctx.stroke();
+      }
+    } else if (this.type === "nova") {
+      // Estallido radial en rojo (alude a la explosión)
+      ctx.strokeStyle = NOVA_COLOR;
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * this.radius, Math.sin(a) * this.radius);
+        ctx.stroke();
+      }
     } else {
       // Triple: rombo cian + abanico de 3 líneas
       ctx.strokeStyle = PU_COLOR;
@@ -340,7 +369,8 @@ class PowerUp {
 // ── Estado del juego ──────────────────────────────────────────────────────────
 let ship, bullets, asteroids, particles, powerups;
 let score, lives, level;
-let tripleTimer, shieldTimer, slowTimer, droppedTypes, killsThisLevel, levelTypes;
+let tripleTimer, shieldTimer, slowTimer, hyperTimer;
+let droppedTypes, killsThisLevel, levelTypes, novaDroppedThisLevel;
 let state; // 'playing' | 'dead' | 'gameover'
 let deadTimer;
 
@@ -359,23 +389,39 @@ function spawnAsteroids(count) {
 function resetLevelDrop() {
   droppedTypes = new Set();
   killsThisLevel = 0;
-  // Elegir al azar TYPES_PER_LEVEL de los 3 tipos existentes para este nivel
+  novaDroppedThisLevel = false;
+  // Elegir al azar TYPES_PER_LEVEL tipos del pool para este nivel
   const pool = [...ALL_PU_TYPES];
   while (pool.length > TYPES_PER_LEVEL) pool.splice(randInt(0, pool.length - 1), 1);
   levelTypes = pool;
 }
 
 function tryDropPowerup(x, y) {
-  if (droppedTypes.size >= levelTypes.length) return; // ya salieron los tipos del nivel
-  killsThisLevel++;
-  for (const t of levelTypes) {
-    if (droppedTypes.has(t)) continue;
-    if (Math.random() < DROP_CHANCE || killsThisLevel >= DROP_GUARANTEE) {
-      powerups.push(new PowerUp(x, y, t));
-      droppedTypes.add(t);
-      return; // máx. un item por destrucción, para espaciarlos
+  // Tipos garantizados del nivel (uno de cada)
+  if (droppedTypes.size < levelTypes.length) {
+    killsThisLevel++;
+    for (const t of levelTypes) {
+      if (droppedTypes.has(t)) continue;
+      if (Math.random() < DROP_CHANCE || killsThisLevel >= DROP_GUARANTEE) {
+        powerups.push(new PowerUp(x, y, t));
+        droppedTypes.add(t);
+        return; // máx. un item por destrucción, para espaciarlos
+      }
     }
   }
+  // Bomba Nova: escasa, máx 1 por nivel, sin garantía
+  if (!novaDroppedThisLevel && Math.random() < NOVA_CHANCE) {
+    powerups.push(new PowerUp(x, y, "nova"));
+    novaDroppedThisLevel = true;
+  }
+}
+
+function detonateNova() {
+  for (const a of asteroids) {
+    score += POINTS[a.size];
+    explode(a.x, a.y, a.size * 5);
+  }
+  asteroids = [];
 }
 
 function initGame() {
@@ -387,6 +433,7 @@ function initGame() {
   tripleTimer = 0;
   shieldTimer = 0;
   slowTimer = 0;
+  hyperTimer = 0;
   resetLevelDrop();
   score = 0;
   lives = 3;
@@ -445,6 +492,7 @@ function update(dt) {
   if (tripleTimer > 0) tripleTimer -= dt;
   if (shieldTimer > 0) shieldTimer -= dt;
   if (slowTimer > 0) slowTimer -= dt;
+  if (hyperTimer > 0) hyperTimer -= dt;
 
   // Disparar
   if (pressed("Space")) {
@@ -486,6 +534,8 @@ function update(dt) {
       if (p.type === "triple") tripleTimer = TRIPLE_DURATION;
       else if (p.type === "shield") shieldTimer = SHIELD_DURATION;
       else if (p.type === "slow") slowTimer = SLOW_DURATION;
+      else if (p.type === "hyper") hyperTimer = HYPER_DURATION;
+      else if (p.type === "nova") detonateNova();
       explode(p.x, p.y, 12); // destello al recoger
     }
   }
@@ -559,6 +609,8 @@ function drawHUD() {
   for (let i = 0; i < lives; i++) drawLifeIcon(W - 16 - i * 22, 18);
 
   // Indicadores de power-ups activos (fila inferior, uno por línea)
+  if (hyperTimer > 0)
+    drawPowerBar("HYPER", hyperTimer / HYPER_DURATION, HYPER_COLOR, H - 68);
   if (slowTimer > 0)
     drawPowerBar("SLOW", slowTimer / SLOW_DURATION, SLOW_COLOR, H - 50);
   if (shieldTimer > 0)
